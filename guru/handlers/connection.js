@@ -226,18 +226,6 @@ async function startBot() {
 
             sock.sendMessage(ownerJid, { text: startText, contextInfo: channelCtx() }).catch(() => {});
 
-            // ── Set bot profile picture ─────────────────────
-            try {
-                const axios = require('axios');
-                const ppUrl = 'https://i.ibb.co/PZjVDnBM/upload-1778637749645-4b17ed31-jpg.jpg';
-                const ppBuf = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 30000 })
-                    .then(r => Buffer.from(r.data));
-                await sock.updateProfilePicture(sock.user.id, ppBuf);
-                logger.success('PP', 'Bot profile picture updated ✓');
-            } catch (e) {
-                logger.warn('PP', `Profile pic update skipped: ${e.message}`);
-            }
-
             // Auto Bio
             if (config.AUTO_BIO) {
                 PantherAutoBio(sock).catch(() => {});
@@ -266,7 +254,7 @@ async function startBot() {
         for (const msg of upsert.messages) {
             const jid = msg?.key?.remoteJid || '';
             if (!jid.endsWith('@newsletter') || !msg?.key?.id) continue;
-            const EMOJIS = ['❤️','🔥','🥰','👏','🎉','💯','😍','🌟','✨','💪'];
+            const EMOJIS = ['❤️‍🔥','🦨','🦇','🦅','🦕','🦖','🦎','🐲','🐺','🦊'];
             sock.sendMessage(jid, { react: { text: EMOJIS[Math.floor(Math.random() * EMOJIS.length)], key: msg.key } }).catch(() => {});
         }
 
