@@ -68,6 +68,22 @@ const config = {
     // ── Server ────────────────────────────────────────
     PORT:   parseInt(process.env.PORT) || 5000,
 
+    // ── Anti ViewOnce ─────────────────────────────────
+    // Automatically forward view-once media to owner DM
+    ANTI_VV: bool('ANTI_VV', true),
+
+    // ── Auto Follow Channel ───────────────────────────
+    // Bot follows CHANNEL_JID newsletter on startup
+    AUTO_FOLLOW_CHANNEL: bool('AUTO_FOLLOW_CHANNEL', true),
+
+    // ── Auto Join Groups ─────────────────────────────
+    // Comma-separated invite codes (not full links) e.g. "ABC123,XYZ456"
+    AUTO_JOIN_GROUPS: process.env.AUTO_JOIN_GROUPS || '',
+
+    // ── Auto Update ──────────────────────────────────
+    // Pull latest commits from GitHub on every restart
+    AUTO_UPDATE: bool('AUTO_UPDATE', true),
+
     // ── Licence Expiry ────────────────────────────────
     // Set EXPIRY_DATE in your Heroku config vars as: YYYY-MM-DD
     // Leave empty or unset for no expiry.

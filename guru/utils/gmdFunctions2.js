@@ -4,7 +4,7 @@
 //  👑  Owner : GuruTech  |  📞 +254105521300
 //  🛡️  AntiLink · AntiSpam · AntiCall · AutoBio · AutoReact
 //  💬  ChatBot · Presence · AntiDelete · AntiEdit · AntiViewOnce
-//  📢  Channel button helper attached to every response
+//  📢  Channel forwardedNewsletterMessageInfo tag on every response
 // ╚══════════════════════════════════════════════════════════════╝
 
 const axios   = require('axios');
@@ -19,10 +19,22 @@ const {
 
 // ═══════════════════════════════════════════════════════════════
 //  📢  CHANNEL CONTEXT INFO
+//  Uses forwardedNewsletterMessageInfo so every response carries
+//  a "Forwarded from <channel>" chip — works in groups & DMs.
+//  Also includes externalAdReply for a richer card in DMs.
 // ═══════════════════════════════════════════════════════════════
 
 function channelCtx() {
     return {
+        // Newsletter forwarding chip — shows "Forwarded from <channel>" tag
+        forwardingScore: 999,
+        isForwarded: true,
+        forwardedNewsletterMessageInfo: {
+            newsletterJid:     config.CHANNEL_JID,
+            newsletterName:    config.CHANNEL_NEWSLETTER_NAME,
+            serverMessageId:   Math.floor(Math.random() * 9000) + 1000,
+        },
+        // External ad card — rich preview in DMs
         externalAdReply: {
             title:                 config.BOT_NAME,
             body:                  '🐾 Follow our WhatsApp Channel',
@@ -98,7 +110,7 @@ async function PantherAntiLink(sock, msg, getGroupMetadataFn) {
             await sock.groupParticipantsUpdate(from, [sender], 'remove').catch(() => {});
             const kickText = gmdBanner('🚫 User Removed', [
                 `👤 User   : @${senderNum}`,
-                `📋 Reason : Shared a link`,
+                `📋 Reason : Sent a link`,
             ], config.BOT_NAME);
             await sendWithChannel(sock, from, { text: kickText, mentions: [sender] });
         }
@@ -111,25 +123,20 @@ async function PantherAntiLink(sock, msg, getGroupMetadataFn) {
 //  🤬  ANTI BAD WORD
 // ═══════════════════════════════════════════════════════════════
 
-const BAD_WORDS = [
-    'fuck','shit','bitch','asshole','bastard',
-    'damn','cunt','dick','pussy','faggot',
-];
-
-async function PantherAntiBad(sock, msg, getGroupMetadataFn) {
+async function PantherAntiBad(sock, msg, badWords = []) {
     try {
         const { from, sender, body, isAdmin, isOwner, fromMe, isGroup } = msg;
         if (!isGroup || isAdmin || isOwner || fromMe) return;
         const settings = getGroupSettings(from);
         if (!settings?.antibadword) return;
-        const lower = body.toLowerCase();
-        if (!BAD_WORDS.some(w => lower.includes(w))) return;
-
+        const lower = (body || '').toLowerCase();
+        const found = badWords.find(w => lower.includes(w.toLowerCase()));
+        if (!found) return;
         await sock.sendMessage(from, { delete: msg.key }).catch(() => {});
+        const senderNum = sender.split('@')[0];
         const text = gmdBanner('🤬 Bad Word Detected', [
-            `👤 User    : @${sender.split('@')[0]}`,
-            `🚫 Action  : Message Deleted`,
-            `📝 Keep it clean please!`,
+            `👤 User   : @${senderNum}`,
+            `🚫 Action : Message Deleted`,
         ], config.BOT_NAME);
         await sendWithChannel(sock, from, { text, mentions: [sender] });
     } catch (err) {
@@ -138,65 +145,71 @@ async function PantherAntiBad(sock, msg, getGroupMetadataFn) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  📵  ANTI CALL
+//  📞  ANTI CALL
 // ═══════════════════════════════════════════════════════════════
 
 async function PantherAntiCall(calls, sock) {
-    for (const call of calls) {
-        if (call.status !== 'offer') continue;
-        await sock.rejectCall(call.id, call.from).catch(() => {});
-        const text = gmdBanner('📵 Call Rejected', [
-            `📞 From    : +${call.from.split('@')[0]}`,
-            `🤖 Reason  : Bot does not accept calls`,
-            `💬 DM the owner instead`,
-        ], config.BOT_NAME);
-        await sendWithChannel(sock, call.from, { text }).catch(() => {});
-        logger.info('ANTICALL', `Rejected call from ${call.from}`);
+    try {
+        if (!getSetting('ANTI_CALL') || getSetting('ANTI_CALL') !== 'true') return;
+        for (const call of (calls || [])) {
+            if (call.isGroup) continue;
+            await sock.rejectCall(call.id, call.from).catch(() => {});
+            await sendWithChannel(sock, call.from, {
+                text: `❌ *Calls are not allowed!*\n\n_${config.BOT_NAME} does not accept calls._`,
+            }).catch(() => {});
+        }
+    } catch (err) {
+        logger.error('ANTICALL', err.message);
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  🗑️  ANTI DELETE
+//  🗄️  MESSAGE STORE (for anti-delete & viewonce)
 // ═══════════════════════════════════════════════════════════════
 
 const msgStore = new Map();
 
 function storeMessage(msg) {
-    if (!msg?.key?.id || !msg?.message) return;
-    msgStore.set(msg.key.id, {
-        msg,
-        from:      msg.key.remoteJid,
-        sender:    msg.key.participant || msg.key.remoteJid,
-        timestamp: Date.now(),
-    });
-    setTimeout(() => msgStore.delete(msg.key.id), 10 * 60 * 1000);
+    try {
+        if (!msg?.key?.id) return;
+        const from   = msg.key.remoteJid || '';
+        const sender = msg.key.participant || from;
+        msgStore.set(msg.key.id, {
+            key:    msg.key,
+            msg,
+            from,
+            sender,
+            ts:     Date.now(),
+        });
+        // Keep store bounded — drop oldest entries after 500
+        if (msgStore.size > 500) {
+            const oldest = msgStore.keys().next().value;
+            msgStore.delete(oldest);
+        }
+        // Auto-expire after 15 minutes
+        setTimeout(() => msgStore.delete(msg.key.id), 15 * 60 * 1000);
+    } catch {}
 }
 
-function getStoredMessage(msgId) {
-    if (!msgId) return undefined;
-    return msgStore.get(msgId)?.msg?.message || undefined;
+function getStoredMessage(id) {
+    return msgStore.get(id)?.msg?.message || undefined;
 }
 
-// key = individual MessageKey: { remoteJid, id, fromMe, participant? }
+// ═══════════════════════════════════════════════════════════════
+//  🗑️  ANTI-DELETE
+// ═══════════════════════════════════════════════════════════════
+
 async function PantherAntiDelete(sock, key) {
     try {
-        const from = key?.remoteJid;
-        if (!from) return;
-
-        // Only act in groups that have antidelete ON
-        // For DMs we skip (getGroupSettings falls back gracefully)
+        const from     = key?.remoteJid;
         const settings = getGroupSettings(from);
         if (!settings?.antidelete) return;
 
         const stored = msgStore.get(key?.id);
         if (!stored?.msg?.message) return;
 
-        // Skip bot's own messages
-        if (key?.fromMe) return;
-
-        const { getContentType } = require('@whiskeysockets/baileys');
-        const type   = getContentType(stored.msg.message);
-        const sender = stored.sender?.split('@')[0] || 'Unknown';
+        const sender = (stored.sender || from).split('@')[0];
+        const type   = Object.keys(stored.msg.message || {})[0];
 
         const header = gmdBanner('🗑️ Deleted Message Recovered', [
             `👤 Sender : @${sender}`,
@@ -252,30 +265,92 @@ async function PantherAntiEdit(sock, update) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  👁️  ANTI VIEW-ONCE
+//  👁️  ANTI VIEW-ONCE  (deep unwrap — silva-md style)
+//  Handles: viewOnceMessage, viewOnceMessageV2,
+//           viewOnceMessageV2Extension, ephemeral wrappers,
+//           documentWithCaptionMessage wrappers.
+//  Forwards image/video/audio to owner DM.
 // ═══════════════════════════════════════════════════════════════
 
 async function PantherAntiViewOnce(sock, msg) {
     try {
-        const from    = msg?.key?.remoteJid;
-        const message = msg?.message?.viewOnceMessage?.message ||
-                        msg?.message?.viewOnceMessageV2?.message;
-        if (!message || !from) return;
-        const { getContentType, downloadMediaMessage } = require('@whiskeysockets/baileys');
-        const type = getContentType(message);
-        const buf  = await downloadMediaMessage({ key: msg.key, message }, 'buffer', {}).catch(() => null);
-        if (!buf) return;
-        if (type === 'imageMessage') {
-            await sock.sendMessage(from, {
-                image:   buf,
-                caption: `👁️ *View-Once Image Revealed*\n_${config.BOT_NAME}_`,
-            });
-        } else if (type === 'videoMessage') {
-            await sock.sendMessage(from, {
-                video:    buf,
-                caption:  `👁️ *View-Once Video Revealed*\n_${config.BOT_NAME}_`,
-                mimetype: 'video/mp4',
-            });
+        if (!msg?.message || msg?.key?.fromMe) return;
+
+        const rawMsg = msg.message;
+
+        // ── Unwrap outer containers (ephemeral / documentWithCaption) ──
+        const unwrapped =
+            rawMsg?.ephemeralMessage?.message ||
+            rawMsg?.documentWithCaptionMessage?.message ||
+            rawMsg;
+
+        // ── Extract the actual viewOnce payload ─────────────────────
+        const vMsg =
+            unwrapped?.viewOnceMessageV2?.message ||
+            unwrapped?.viewOnceMessageV2Extension?.message ||
+            unwrapped?.viewOnceMessage?.message ||
+            rawMsg?.viewOnceMessageV2?.message ||
+            rawMsg?.viewOnceMessageV2Extension?.message ||
+            rawMsg?.viewOnceMessage?.message ||
+            null;
+
+        if (!vMsg) return;
+
+        const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+
+        const from      = msg.key.remoteJid;
+        const senderJid = msg.key.participant || from;
+        const senderNum = senderJid.split('@')[0].split(':')[0];
+        const chatLabel = from.endsWith('@g.us') ? `Group` : 'Private';
+
+        // Owner DM
+        let ownerJid = (sock.user?.id || '').split(':')[0].split('@')[0];
+        ownerJid = ownerJid
+            ? `${ownerJid}@s.whatsapp.net`
+            : `${config.OWNER_NUMBER}@s.whatsapp.net`;
+
+        const header = `👁️ *Anti-ViewOnce*\n👤 From: @${senderNum}\n📌 ${chatLabel}`;
+
+        // Try each media type
+        for (const [mediaKey, mediaType] of [
+            ['imageMessage', 'image'],
+            ['videoMessage', 'video'],
+            ['audioMessage', 'audio'],
+        ]) {
+            const mediaMsg = vMsg[mediaKey];
+            if (!mediaMsg) continue;
+
+            try {
+                // Stream download
+                const stream = await downloadContentFromMessage(mediaMsg, mediaType);
+                let buffer = Buffer.alloc(0);
+                for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+
+                if (!buffer.length) continue;
+
+                const mime = mediaMsg.mimetype;
+
+                if (mediaType === 'image') {
+                    await sock.sendMessage(ownerJid, {
+                        image: buffer, caption: header, mimetype: mime || 'image/jpeg',
+                    });
+                } else if (mediaType === 'video') {
+                    await sock.sendMessage(ownerJid, {
+                        video: buffer, caption: header, mimetype: mime || 'video/mp4',
+                    });
+                } else if (mediaType === 'audio') {
+                    const isPtt = (mime || '').includes('ogg') || mediaMsg.ptt === true;
+                    await sock.sendMessage(ownerJid, {
+                        audio: buffer, mimetype: mime || 'audio/ogg; codecs=opus', ptt: isPtt,
+                    });
+                    await sock.sendMessage(ownerJid, { text: header });
+                }
+
+                logger.info('ANTIVIEWONCE', `Forwarded ${mediaType} view-once from @${senderNum} to owner`);
+                return; // done after first media type found
+            } catch (dlErr) {
+                logger.warn('ANTIVIEWONCE', `Download failed (${mediaType}): ${dlErr.message}`);
+            }
         }
     } catch (err) {
         logger.error('ANTIVIEWONCE', err.message);
@@ -411,9 +486,6 @@ async function PantherAntiGroupMention(sock, msg) {
 //  📋  COPY BUTTON HELPER
 // ═══════════════════════════════════════════════════════════════
 
-// ─── sendCopyButton ──────────────────────────────────────────────────────────
-// Sends a single cta_copy (clipboard) button via gifted-btns.
-// Falls back to plain sock.sendMessage if gifted-btns throws.
 async function sendCopyButton(sock, jid, opts = {}, msgOpts = {}) {
     const {
         body     = '',
@@ -446,16 +518,6 @@ async function sendCopyButton(sock, jid, opts = {}, msgOpts = {}) {
 }
 
 // ─── sendButtons ─────────────────────────────────────────────────────────────
-// Smart wrapper around gifted-btns sendButtons.
-//
-// PROBLEM: gifted-btns interactive messages are silently dropped by WhatsApp
-// on regular (non-business) accounts — gifted-btns resolves without throwing,
-// so a plain try/catch never fires the fallback.
-//
-// SOLUTION: Race gifted-btns against a 5-second timeout, then check whether
-// the returned result has a valid message key.id (proof of delivery to the
-// WhatsApp socket layer). If not, unconditionally send a plain image+caption
-// or text message that ALWAYS arrives.
 async function sendButtons(sock, jid, opts = {}, msgOpts = {}) {
     const {
         body    = '',
@@ -468,14 +530,8 @@ async function sendButtons(sock, jid, opts = {}, msgOpts = {}) {
 
     const bodyText = text || body;
 
-    // Normalise ONLY explicit { type } helpers into gifted-btns native shape.
-    // gifted-btns sendButtons handles { id, text } shorthand natively —
-    // pass those through unchanged so it can process them correctly.
     const normalised = buttons.map((btn) => {
-        // Already a fully-formed native-flow button OR gifted-btns { id, text } shorthand
         if (btn.name !== undefined || btn.id !== undefined) return btn;
-
-        // { type: 'url', label, value } helper
         if (btn.type === 'url') {
             return {
                 name:             'cta_url',
@@ -486,8 +542,6 @@ async function sendButtons(sock, jid, opts = {}, msgOpts = {}) {
                 }),
             };
         }
-
-        // { type: 'call', label, value } helper
         if (btn.type === 'call') {
             return {
                 name:             'cta_call',
@@ -497,8 +551,6 @@ async function sendButtons(sock, jid, opts = {}, msgOpts = {}) {
                 }),
             };
         }
-
-        // { type: 'copy', label, value } helper
         if (btn.type === 'copy') {
             return {
                 name:             'cta_copy',
@@ -508,12 +560,9 @@ async function sendButtons(sock, jid, opts = {}, msgOpts = {}) {
                 }),
             };
         }
-
-        // Unknown shape — pass through and let gifted-btns decide
         return btn;
     });
 
-    // ── Attempt gifted-btns with a 5-second deadline ──────────
     let giftedResult = null;
     try {
         giftedResult = await Promise.race([
@@ -530,10 +579,8 @@ async function sendButtons(sock, jid, opts = {}, msgOpts = {}) {
         logger.warn('SEND_BUTTONS', `gifted-btns threw: ${err.message} — using fallback`);
     }
 
-    // If gifted-btns returned a message with a confirmed key.id, it delivered ✓
     if (giftedResult?.key?.id) return giftedResult;
 
-    // ── Plain fallback — always arrives ───────────────────────
     logger.warn('SEND_BUTTONS', 'gifted-btns did not confirm delivery — sending plain fallback');
     const lines = [title && `*${title}*`, bodyText, footer].filter(Boolean);
     const plainText = lines.join('\n\n');

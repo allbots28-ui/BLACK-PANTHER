@@ -42,14 +42,27 @@ const voStore = new Map();
 const lastVoPerChat = new Map();
 
 // ════════════════════════════════════════════════════════════════════
-//  HELPER — extract view-once payload
+//  HELPER — extract view-once payload (deep unwrap — silva-md style)
+//  Handles ephemeral wrappers, documentWithCaption wrappers, and all
+//  three viewOnce protocol variants.
 // ════════════════════════════════════════════════════════════════════
 function extractViewOnce(msg) {
     if (!msg) return null;
+
+    // Unwrap outer ephemeral / documentWithCaption layers first
+    const unwrapped =
+        msg.ephemeralMessage?.message ||
+        msg.documentWithCaptionMessage?.message ||
+        msg;
+
     return (
-        msg.viewOnceMessage?.message ||
+        unwrapped.viewOnceMessageV2?.message ||
+        unwrapped.viewOnceMessageV2Extension?.message ||
+        unwrapped.viewOnceMessage?.message ||
+        // Also check originals in case unwrap didn't add anything
         msg.viewOnceMessageV2?.message ||
         msg.viewOnceMessageV2Extension?.message ||
+        msg.viewOnceMessage?.message ||
         null
     );
 }
