@@ -3,12 +3,18 @@
 //  🐾  BLACK PANTHER MD  —  Auto-Updater
 //  Pulls latest commits from origin/main on every restart.
 //  Uses GITHUB_PERSONAL_ACCESS_TOKEN for authenticated access.
-//  Deep fetch: full depth with all refs so nothing is missed.
+//
+//  Skipped automatically when:
+//   • Running inside a Docker/Heroku/cloud container (DYNO, K_SERVICE,
+//     RAILWAY_ENVIRONMENT, etc.) — images are immutable; git reset
+//     would be wiped on next deploy anyway.
+//   • git binary is not in PATH
+//   • No git remote "origin" configured
+//   • GITHUB_PERSONAL_ACCESS_TOKEN secret not set
 // ╚══════════════════════════════════════════════════════════════╝
 
-const { execSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const path   = require('path');
-const fs     = require('fs');
 const logger = require('./logger');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -28,11 +34,40 @@ function injectAuth(remoteUrl, token) {
     }
 }
 
+// ── Detect immutable/cloud environments where git pull makes no sense ──
+function isCloudContainer() {
+    return !!(
+        process.env.DYNO            ||   // Heroku
+        process.env.K_SERVICE       ||   // Google Cloud Run
+        process.env.RAILWAY_ENVIRONMENT  ||   // Railway
+        process.env.RENDER          ||   // Render
+        process.env.KOYEB_APP_NAME  ||   // Koyeb
+        process.env.FLY_APP_NAME         // Fly.io
+    );
+}
+
+// ── Check git is installed ─────────────────────────────────────
+function gitAvailable() {
+    const r = run('git --version');
+    return r.status === 0;
+}
+
 async function autoUpdate() {
     try {
+        // Skip on cloud/Docker deployments — filesystem is read-only/ephemeral
+        if (isCloudContainer()) {
+            logger.info('UPDATE', '☁️  Cloud environment detected — skipping auto-update (deploy a new image to update)');
+            return false;
+        }
+
         const token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
         if (!token) {
             logger.warn('UPDATE', 'GITHUB_PERSONAL_ACCESS_TOKEN not set — skipping auto-update');
+            return false;
+        }
+
+        if (!gitAvailable()) {
+            logger.warn('UPDATE', 'git not found in PATH — skipping auto-update');
             return false;
         }
 
@@ -47,21 +82,25 @@ async function autoUpdate() {
 
         logger.info('UPDATE', `Fetching latest updates from ${remoteUrl} …`);
 
-        // Set auth URL temporarily
+        // Set auth URL temporarily (token never printed to logs)
         run(`git remote set-url origin "${authUrl}"`);
 
-        // Deep fetch — unshallow if needed, get all refs
-        const unshallow = run('git fetch --unshallow origin main 2>/dev/null || git fetch --depth=2147483647 origin main 2>/dev/null || git fetch origin main');
-        
-        // Restore clean URL (token out of logs)
+        // Deep fetch — unshallow if a shallow clone
+        const fetchRes = run(
+            'git fetch --unshallow origin main 2>/dev/null || ' +
+            'git fetch --depth=2147483647 origin main 2>/dev/null || ' +
+            'git fetch origin main'
+        );
+
+        // Restore clean URL (token out of logs/history)
         run(`git remote set-url origin "${remoteUrl}"`);
 
-        if (unshallow.status !== 0 && !(unshallow.stderr || '').includes('already complete')) {
-            logger.warn('UPDATE', `Fetch failed: ${(unshallow.stderr || '').slice(0, 200)}`);
+        if (fetchRes.status !== 0 && !(fetchRes.stderr || '').includes('already complete')) {
+            logger.warn('UPDATE', `Fetch failed: ${(fetchRes.stderr || '').slice(0, 200)}`);
             return false;
         }
 
-        // Check if we are behind
+        // Count new commits
         const revRes = run('git rev-list HEAD..origin/main --count');
         const behind = parseInt((revRes.stdout || '0').trim(), 10) || 0;
 
@@ -72,7 +111,7 @@ async function autoUpdate() {
 
         logger.info('UPDATE', `📦 ${behind} new commit(s) found — applying update…`);
 
-        // Show what's coming
+        // Show incoming changelog
         const logRes = run('git log HEAD..origin/main --oneline --no-decorate');
         if (logRes.stdout) {
             for (const line of logRes.stdout.trim().split('\n').slice(0, 10)) {
@@ -80,16 +119,16 @@ async function autoUpdate() {
             }
         }
 
-        // Reset to origin/main (hard — accept all upstream changes)
-        const mergeRes = run('git reset --hard origin/main');
-        if (mergeRes.status !== 0) {
-            logger.warn('UPDATE', `Reset failed: ${(mergeRes.stderr || '').slice(0, 200)}`);
+        // Reset to origin/main
+        const resetRes = run('git reset --hard origin/main');
+        if (resetRes.status !== 0) {
+            logger.warn('UPDATE', `Reset failed: ${(resetRes.stderr || '').slice(0, 200)}`);
             return false;
         }
 
         logger.success('UPDATE', `✅ Updated successfully (${behind} commit(s) applied)`);
 
-        // Re-install dependencies silently if package.json changed
+        // Re-install dependencies only if package.json changed
         const diffRes = run('git diff HEAD@{1} HEAD -- package.json 2>/dev/null');
         if (diffRes.stdout && diffRes.stdout.trim()) {
             logger.info('UPDATE', '📦 package.json changed — reinstalling dependencies…');
@@ -97,7 +136,7 @@ async function autoUpdate() {
             logger.info('UPDATE', npmRes.status === 0 ? '✅ Dependencies updated' : `⚠️  npm install exit ${npmRes.status}`);
         }
 
-        return true; // signals that a restart would pick up new code
+        return true;
 
     } catch (err) {
         logger.warn('UPDATE', `Auto-update error: ${err.message}`);
